@@ -3,6 +3,7 @@
 
 #include <colmap/controllers/option_manager.h>
 #include <colmap/util/string.h>
+#include <colmap/util/logging.h>
 
 int main(int argc, char** argv) {
   colmap::InitializeGlog(argv);
