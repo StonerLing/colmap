@@ -37,7 +37,6 @@
 #include <memory>
 #include <sstream>
 
-
 #ifdef _WIN32
 #include <Windows.h>
 #endif
