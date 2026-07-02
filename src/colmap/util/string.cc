@@ -36,8 +36,6 @@
 #include <locale>
 #include <sstream>
 
-#include <boost/algorithm/string.hpp>
-
 #ifdef _WIN32
 #include <Windows.h>
 #endif
@@ -249,8 +247,20 @@ std::string StringGetAfter(const std::string& str, const std::string& key) {
 std::vector<std::string> StringSplit(const std::string& str,
                                      const std::string& delim) {
   std::vector<std::string> elems;
-  // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
-  boost::split(elems, str, boost::is_any_of(delim), boost::token_compress_on);
+
+  std::string::size_type start = 0;
+  std::string::size_type end = 0;
+
+  while ((end = str.find_first_of(delim, start)) != std::string::npos) {
+    if (end != start) {
+      elems.emplace_back(str.substr(start, end - start));
+    }
+    start = end + 1;
+  }
+  if (start < str.size()) {
+    elems.emplace_back(str.substr(start));
+  }
+
   return elems;
 }
 
