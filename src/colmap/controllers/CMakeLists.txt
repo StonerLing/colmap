@@ -57,7 +57,7 @@ COLMAP_ADD_LIBRARY(
         colmap_scene
         colmap_util
         Eigen3::Eigen
-        Boost::program_options
+        CLI11::CLI11
     PRIVATE_LINK_LIBS
         colmap_image
         colmap_math

@@ -164,7 +164,6 @@ jobs:
             build-essential \
             cmake \
             ninja-build \
-            libboost-program-options-dev \
             libboost-graph-dev \
             libboost-system-dev \
             libeigen3-dev \
@@ -184,6 +183,7 @@ jobs:
             libunwind-dev \
             libcurl4-openssl-dev \
             libmkl-full-dev \
+            libcli11-dev \
             xvfb
 
           # Fix issue in Ubuntu's openimageio CMake config.

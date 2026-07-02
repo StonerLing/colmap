@@ -76,7 +76,8 @@ jobs:
             cgal \
             sqlite3 \
             ccache \
-            libomp
+            libomp \
+            cli11
           brew link --force libomp
 
       - name: Configure and build
