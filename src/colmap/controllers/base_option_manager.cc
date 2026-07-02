@@ -56,7 +56,7 @@ class CustomFormatter : public CLI::Formatter {
   std::string make_option_opts(const CLI::Option* opt) const override {
     std::stringstream out;
     if (opt->get_type_size() != 0) {
-      if (is_option_defaults_enabled() && !opt->get_default_str().empty()) {
+      if (!opt->get_default_str().empty()) {
         out << " (=" << opt->get_default_str() << ")";
       }
       if (opt->get_required()) {
