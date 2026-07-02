@@ -34,8 +34,9 @@
 #include <algorithm>
 #include <cstdarg>
 #include <locale>
-#include <sstream>
 #include <memory>
+#include <sstream>
+
 
 #ifdef _WIN32
 #include <Windows.h>
