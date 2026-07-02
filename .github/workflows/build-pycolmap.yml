@@ -10,10 +10,8 @@ on:
     branches:
       - main
       - release/*
-  pull_request:
-    types: [ assigned, opened, synchronize, reopened ]
-  release:
-    types: [ published, edited ]
+  pull_request: []
+  release: []
 
 jobs:
   build:
