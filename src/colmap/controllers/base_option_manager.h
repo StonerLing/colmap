@@ -130,6 +130,8 @@ class BaseOptionManager {
   };
   std::vector<std::unique_ptr<EnumOptionInfo>> enum_options_;
 
+  bool add_project_options_ = false;
+
   bool added_random_options_ = false;
   bool added_log_options_ = false;
   bool added_database_options_ = false;

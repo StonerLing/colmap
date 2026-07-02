@@ -32,10 +32,10 @@
 #include "colmap/math/random.h"
 #include "colmap/util/file.h"
 #include "colmap/util/logging.h"
+#include "colmap/util/string.h"
 #include "colmap/util/version.h"
 
 #include <fstream>
-#include <map>
 #include <sstream>
 
 namespace colmap {
@@ -69,13 +69,13 @@ class CustomFormatter : public CLI::Formatter {
 
 class CustomConfig : public CLI::ConfigINI {
   static std::string GetValue(const CLI::Option* opt, bool default_also) {
-    // Use raw results (no ini-style quoting/escaping) for backward compat
     const auto& results = opt->results();
     if (!results.empty()) {
-      // Multi-option values are joined with space (matching boost behavior)
       std::string out;
       for (size_t i = 0; i < results.size(); ++i) {
-        if (i > 0) out += ' ';
+        if (i > 0) {
+          out += ' ';
+        }
         out += results[i];
       }
       return out;
@@ -95,17 +95,51 @@ class CustomConfig : public CLI::ConfigINI {
     return {};
   }
 
+  std::vector<CLI::ConfigItem> from_config(std::istream& input) const override {
+    std::vector<CLI::ConfigItem> output;
+    std::string line;
+    while (std::getline(input, line)) {
+      // Skip empty lines, comments, and section headers
+      if (line.empty() || line[0] == '#' || line[0] == ';' || line[0] == '[') {
+        continue;
+      }
+      auto eq = line.find('=');
+      if (eq == std::string::npos) {
+        continue;
+      }
+      std::string name = line.substr(0, eq);
+      std::string value = line.substr(eq + 1);
+      StringTrim(&name);
+      StringTrim(&value);
+      if (name.empty()) {
+        continue;
+      }
+      if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+        value = value.substr(1, value.size() - 2);
+      }
+      output.push_back({});
+      output.back().name = std::move(name);
+      output.back().inputs = {std::move(value)};
+    }
+    return output;
+  }
+
   std::string to_config(const CLI::App* app,
                         bool default_also,
                         bool write_description,
                         std::string prefix) const override {
+    for (auto* opt : const_cast<CLI::App*>(app)->get_options({})) {
+      if (opt->get_configurable()) {
+        opt->capture_default_str();
+      }
+    }
+
     std::stringstream out;
 
-    // Collect options grouped by section (prefix before first dot).
-    // Top-level options (no dot) go into the default section.
-    std::map<std::string, std::vector<const CLI::Option*>> section_opts;
     for (const auto* opt : app->get_options({})) {
-      if (!opt->get_configurable()) continue;
+      if (!opt->get_configurable()) {
+        continue;
+      }
       std::string name = opt->get_single_name();
       if (name.empty() || name == "--help") {
         continue;
@@ -113,39 +147,17 @@ class CustomConfig : public CLI::ConfigINI {
       if (name.size() > 2 && name[0] == '-' && name[1] == '-') {
         name = name.substr(2);
       }
-      auto dot = name.find(parentSeparatorChar);
-      if (dot != std::string::npos) {
-        section_opts[name.substr(0, dot)].push_back(opt);
-      } else {
-        section_opts[""].push_back(opt);
+
+      std::string value = GetValue(opt, default_also);
+      if (value.empty()) {
+        continue;
       }
-    }
 
-    for (auto& [section, opts] : section_opts) {
-      if (!section.empty()) {
-        out << '[' << section << "]\n";
+      if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+        value = value.substr(1, value.size() - 2);
       }
-      for (const auto* opt : opts) {
-        std::string single_name = opt->get_single_name();
-        if (single_name.size() > 2 && single_name[0] == '-' &&
-            single_name[1] == '-') {
-          single_name = single_name.substr(2);
-        }
 
-        std::string value = GetValue(opt, default_also);
-        if (value.empty()) {
-          continue;
-        }
-
-        // For sectioned options, strip the section prefix from the key name
-        std::string key = single_name;
-        auto dot = key.find(parentSeparatorChar);
-        if (dot != std::string::npos) {
-          key = key.substr(dot + 1);
-        }
-
-        out << key << valueDelimiter << value << '\n';
-      }
+      out << name << valueDelimiter << value << '\n';
     }
 
     return out.str();
@@ -154,21 +166,13 @@ class CustomConfig : public CLI::ConfigINI {
 
 }  // namespace
 
-BaseOptionManager::BaseOptionManager(bool add_project_options) {
+BaseOptionManager::BaseOptionManager(bool add_project_options)
+    : add_project_options_(add_project_options) {
   project_path = std::make_shared<std::filesystem::path>();
   database_path = std::make_shared<std::filesystem::path>();
   image_path = std::make_shared<std::filesystem::path>();
 
-  app_ = std::make_unique<CLI::App>("COLMAP");
-  app_->set_version_flag("-v,--version", GetVersionInfo());
-  app_->formatter(std::make_shared<CustomFormatter>());
-  app_->config_formatter(std::make_shared<CustomConfig>());
-
   ResetImpl(/*reset_logging=*/true);
-
-  if (add_project_options) {
-    app_->set_config("--project_path");
-  }
 
   AddRandomOptions();
   AddLogOptions();
@@ -255,7 +259,13 @@ void BaseOptionManager::ResetImpl(bool reset_logging) {
   const bool kResetPaths = true;
   ResetOptionsImpl(kResetPaths);
 
-  app_->clear();
+  app_ = std::make_unique<CLI::App>("COLMAP");
+  app_->set_version_flag("-v,--version", GetVersionInfo());
+  app_->formatter(std::make_shared<CustomFormatter>());
+  app_->config_formatter(std::make_shared<CustomConfig>());
+  if (add_project_options_) {
+    app_->set_config("--project_path");
+  }
 
   added_random_options_ = false;
   added_log_options_ = false;
@@ -355,7 +365,13 @@ bool BaseOptionManager::Parse(const int argc, char** argv) {
     return false;
   }
 
-  ApplyEnumConversions();
+  try {
+    ApplyEnumConversions();
+  } catch (const std::exception& e) {
+    LOG(ERROR) << e.what();
+    return false;
+  }
+
   ApplyLogFlags();
   PostParse();
 
@@ -382,6 +398,15 @@ bool BaseOptionManager::Read(const std::filesystem::path& path,
     app_->exit(e);
     return false;
   }
+
+  try {
+    ApplyEnumConversions();
+  } catch (const std::exception& e) {
+    LOG(ERROR) << e.what();
+    return false;
+  }
+
+  ApplyLogFlags();
 
   return true;
 }
