@@ -77,7 +77,8 @@ jobs:
             sqlite3 \
             ccache \
             libomp \
-            cli11
+            cli11 \
+            simdjson
           brew link --force libomp
 
       - name: Configure and build
