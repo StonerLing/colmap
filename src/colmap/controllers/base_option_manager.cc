@@ -31,27 +31,148 @@
 
 #include "colmap/math/random.h"
 #include "colmap/util/file.h"
+#include "colmap/util/logging.h"
 #include "colmap/util/string.h"
+#include "colmap/util/version.h"
 
 #include <fstream>
-
-#include <boost/property_tree/ini_parser.hpp>
-
-namespace config = boost::program_options;
+#include <sstream>
 
 namespace colmap {
+namespace {
 
-BaseOptionManager::BaseOptionManager(bool add_project_options) {
+class CustomFormatter : public CLI::Formatter {
+ public:
+  CustomFormatter() { label("REQUIRED", "[REQUIRED]"); }
+
+  std::string make_usage(const CLI::App* app, std::string name) const override {
+    std::string result = "Usage: " + name + " [OPTIONS]";
+    if (app->get_subcommands().size() > 0) {
+      result += " [SUBCOMMAND]";
+    }
+    return result + "\n";
+  }
+
+  std::string make_option_opts(const CLI::Option* opt) const override {
+    std::stringstream out;
+    if (opt->get_type_size() != 0) {
+      if (!opt->get_default_str().empty()) {
+        out << " (=" << opt->get_default_str() << ")";
+      }
+      if (opt->get_required()) {
+        out << " " << get_label("REQUIRED");
+      }
+    }
+    return out.str();
+  }
+};
+
+class CustomConfig : public CLI::ConfigINI {
+  static std::string GetValue(const CLI::Option* opt, bool default_also) {
+    const auto& results = opt->results();
+    if (!results.empty()) {
+      std::string out;
+      for (size_t i = 0; i < results.size(); ++i) {
+        if (i > 0) {
+          out += ' ';
+        }
+        out += results[i];
+      }
+      return out;
+    }
+    if (default_also) {
+      if (!opt->get_default_str().empty()) {
+        return opt->get_default_str();
+      }
+      if (opt->get_expected_min() == 0) {
+        return "false";
+      }
+      if (!opt->get_required()) {
+        return {};
+      }
+      return "<REQUIRED>";
+    }
+    return {};
+  }
+
+  std::vector<CLI::ConfigItem> from_config(std::istream& input) const override {
+    std::vector<CLI::ConfigItem> output;
+    std::string line;
+    while (std::getline(input, line)) {
+      // Skip empty lines, comments, and section headers
+      if (line.empty() || line[0] == '#' || line[0] == ';' || line[0] == '[') {
+        continue;
+      }
+      auto eq = line.find('=');
+      if (eq == std::string::npos) {
+        continue;
+      }
+      std::string name = line.substr(0, eq);
+      std::string value = line.substr(eq + 1);
+      StringTrim(&name);
+      StringTrim(&value);
+      if (name.empty()) {
+        continue;
+      }
+      if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+        value = value.substr(1, value.size() - 2);
+      }
+      output.push_back({});
+      output.back().name = std::move(name);
+      output.back().inputs = {std::move(value)};
+    }
+    return output;
+  }
+
+  std::string to_config(const CLI::App* app,
+                        bool default_also,
+                        bool write_description,
+                        std::string prefix) const override {
+    for (auto* opt : const_cast<CLI::App*>(app)->get_options({})) {
+      if (opt->get_configurable()) {
+        opt->capture_default_str();
+      }
+    }
+
+    std::stringstream out;
+
+    for (const auto* opt : app->get_options({})) {
+      if (!opt->get_configurable()) {
+        continue;
+      }
+      std::string name = opt->get_single_name();
+      if (name.empty() || name == "--help") {
+        continue;
+      }
+      if (name.size() > 2 && name[0] == '-' && name[1] == '-') {
+        name = name.substr(2);
+      }
+
+      std::string value = GetValue(opt, default_also);
+      if (value.empty()) {
+        continue;
+      }
+
+      if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+        value = value.substr(1, value.size() - 2);
+      }
+
+      out << name << valueDelimiter << value << '\n';
+    }
+
+    return out.str();
+  }
+};
+
+}  // namespace
+
+BaseOptionManager::BaseOptionManager(bool add_project_options)
+    : add_project_options_(add_project_options) {
   project_path = std::make_shared<std::filesystem::path>();
   database_path = std::make_shared<std::filesystem::path>();
   image_path = std::make_shared<std::filesystem::path>();
 
   ResetImpl(/*reset_logging=*/true);
-
-  desc_->add_options()("help,h", "");
-  if (add_project_options) {
-    desc_->add_options()("project_path", config::value<std::string>());
-  }
 
   AddRandomOptions();
   AddLogOptions();
@@ -138,13 +259,13 @@ void BaseOptionManager::ResetImpl(bool reset_logging) {
   const bool kResetPaths = true;
   ResetOptionsImpl(kResetPaths);
 
-  desc_ = std::make_shared<boost::program_options::options_description>();
-
-  options_bool_.clear();
-  options_int_.clear();
-  options_double_.clear();
-  options_string_.clear();
-  options_path_.clear();
+  app_ = std::make_unique<CLI::App>("COLMAP");
+  app_->set_version_flag("-v,--version", GetVersionInfo());
+  app_->formatter(std::make_shared<CustomFormatter>());
+  app_->config_formatter(std::make_shared<CustomConfig>());
+  if (add_project_options_) {
+    app_->set_config("--project_path");
+  }
 
   added_random_options_ = false;
   added_log_options_ = false;
@@ -226,7 +347,7 @@ void BaseOptionManager::ApplyLogFlags() {
 void BaseOptionManager::PrintHelp() const {
   LOG(INFO) << "Options can either be specified via command-line or by "
                "defining them in a .ini project file.\n"
-            << *desc_;
+            << app_->help();
 }
 
 void BaseOptionManager::AddAllOptions() {
@@ -237,37 +358,22 @@ void BaseOptionManager::AddAllOptions() {
 }
 
 bool BaseOptionManager::Parse(const int argc, char** argv) {
-  config::variables_map vmap;
-
   try {
-    config::store(config::parse_command_line(argc, argv, *desc_), vmap);
-
-    if (vmap.count("help")) {
-      PrintHelp();
-      // NOLINTNEXTLINE(concurrency-mt-unsafe)
-      exit(EXIT_SUCCESS);
-    }
-
-    if (vmap.count("project_path")) {
-      *project_path = vmap["project_path"].as<std::string>();
-      if (!Read(*project_path)) {
-        return false;
-      }
-    } else {
-      vmap.notify();
-    }
-
-    ApplyEnumConversions();
-    ApplyLogFlags();
-    PostParse();
-
-  } catch (std::exception& exc) {
-    LOG(ERROR) << "Failed to parse options - " << exc.what() << ".";
-    return false;
-  } catch (...) {
-    LOG(ERROR) << "Failed to parse options for unknown reason.";
+    app_->parse(argc, argv);
+  } catch (const CLI::ParseError& e) {
+    app_->exit(e);
     return false;
   }
+
+  try {
+    ApplyEnumConversions();
+  } catch (const std::exception& e) {
+    LOG(ERROR) << e.what();
+    return false;
+  }
+
+  ApplyLogFlags();
+  PostParse();
 
   if (!Check()) {
     LOG(ERROR) << "Invalid options provided.";
@@ -279,38 +385,28 @@ bool BaseOptionManager::Parse(const int argc, char** argv) {
 
 bool BaseOptionManager::Read(const std::filesystem::path& path,
                              bool allow_unregistered) {
-  config::variables_map vmap;
-
   if (!ExistsFile(path)) {
     LOG(ERROR) << "Configuration file does not exist.";
     return false;
   }
 
+  app_->allow_config_extras(allow_unregistered);
+
   try {
-    std::ifstream file(path);
-    THROW_CHECK_FILE_OPEN(file, path);
-
-    const config::parsed_options parsed_options =
-        config::parse_config_file(file, *desc_, allow_unregistered);
-    config::store(parsed_options, vmap);
-
-    if (allow_unregistered) {
-      for (const auto& option : parsed_options.options) {
-        if (option.unregistered) {
-          LOG(WARNING) << "Unrecognized option key: " << option.string_key;
-        }
-      }
-    }
-
-    vmap.notify();
-    ApplyEnumConversions();
-  } catch (std::exception& e) {
-    LOG(ERROR) << "Failed to parse options " << e.what() << ".";
-    return false;
-  } catch (...) {
-    LOG(ERROR) << "Failed to parse options for unknown reason.";
+    app_->parse("--project_path " + path.string());
+  } catch (const CLI::ParseError& e) {
+    app_->exit(e);
     return false;
   }
+
+  try {
+    ApplyEnumConversions();
+  } catch (const std::exception& e) {
+    LOG(ERROR) << e.what();
+    return false;
+  }
+
+  ApplyLogFlags();
 
   return true;
 }
@@ -324,78 +420,10 @@ bool BaseOptionManager::ReRead(const std::filesystem::path& path,
 }
 
 void BaseOptionManager::Write(const std::filesystem::path& path) const {
-  boost::property_tree::ptree pt;
-
-  // First, put all options without a section and then those with a section.
-  // This is necessary as otherwise older Boost versions will write the
-  // options without a section in between other sections and therefore
-  // the errors will be assigned to the wrong section if read later.
-
-  for (const auto& [key, value] : options_bool_) {
-    if (!StringContains(key, ".")) {
-      pt.put(key, *value);
-    }
-  }
-
-  for (const auto& [key, value] : options_int_) {
-    if (!StringContains(key, ".")) {
-      pt.put(key, *value);
-    }
-  }
-
-  for (const auto& [key, value] : options_double_) {
-    if (!StringContains(key, ".")) {
-      pt.put(key, *value);
-    }
-  }
-
-  for (const auto& [key, value] : options_string_) {
-    if (!StringContains(key, ".")) {
-      pt.put(key, *value);
-    }
-  }
-
-  for (const auto& [key, value] : options_path_) {
-    if (!StringContains(key, ".")) {
-      pt.put(key, value->string());
-    }
-  }
-
-  for (const auto& [key, value] : options_bool_) {
-    if (StringContains(key, ".")) {
-      pt.put(key, *value);
-    }
-  }
-
-  for (const auto& [key, value] : options_int_) {
-    if (StringContains(key, ".")) {
-      pt.put(key, *value);
-    }
-  }
-
-  for (const auto& [key, value] : options_double_) {
-    if (StringContains(key, ".")) {
-      pt.put(key, *value);
-    }
-  }
-
-  for (const auto& [key, value] : options_string_) {
-    if (StringContains(key, ".")) {
-      pt.put(key, *value);
-    }
-  }
-
-  for (const auto& [key, value] : options_path_) {
-    if (StringContains(key, ".")) {
-      pt.put(key, value->string());
-    }
-  }
-
   std::ofstream file(path);
   THROW_CHECK_FILE_OPEN(file, path);
-  // Ensure that we don't lose any precision by storing in text.
-  file.precision(17);
-  boost::property_tree::write_ini(file, pt);
+  file << app_->config_to_str(/*default_values=*/true,
+                              /*write_description=*/false);
   file.close();
 }
 

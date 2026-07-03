@@ -9,6 +9,7 @@ on:
     branches:
       - main
       - release/*
+      - colmap-lite
   pull_request:
     types: [ assigned, opened, synchronize, reopened ]
   release:
@@ -75,7 +76,8 @@ jobs:
             cgal \
             sqlite3 \
             ccache \
-            libomp
+            libomp \
+            cli11
           brew link --force libomp
 
       - name: Configure and build

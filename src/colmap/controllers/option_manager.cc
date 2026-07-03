@@ -57,8 +57,6 @@
 #include "colmap/util/file.h"
 #include "colmap/util/version.h"
 
-namespace config = boost::program_options;
-
 namespace colmap {
 
 OptionManager::OptionManager(bool add_project_options)
@@ -1251,7 +1249,7 @@ void OptionManager::PrintHelp() const {
   LOG(INFO) << "Options can either be specified via command-line or by "
                "defining them in a .ini project file passed to "
                "`--project_path`.\n"
-            << *desc_;
+            << app_->help();
 }
 
 }  // namespace colmap

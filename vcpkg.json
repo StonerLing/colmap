@@ -5,10 +5,8 @@
     "license": "BSD-3-Clause",
     "supports": "(linux | windows | osx) & (x86 | x64 | arm64)",
     "dependencies": [
-        "boost-algorithm",
         "boost-graph",
         "boost-heap",
-        "boost-program-options",
         "boost-property-map",
         "boost-property-tree",
         {
@@ -19,6 +17,7 @@
                 "suitesparse"
             ]
         },
+        "cli11",
         "eigen3",
         "gflags",
         "glog",
