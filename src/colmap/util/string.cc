@@ -248,19 +248,21 @@ std::string StringGetAfter(const std::string& str, const std::string& key) {
 std::vector<std::string> StringSplit(const std::string& str,
                                      const std::string& delim) {
   std::vector<std::string> elems;
-
   std::string::size_type start = 0;
-  std::string::size_type end = 0;
 
-  while ((end = str.find_first_of(delim, start)) != std::string::npos) {
-    if (end != start) {
-      elems.emplace_back(str.substr(start, end - start));
+  while (true) {
+    const auto end = str.find_first_of(delim, start);
+    if (end == std::string::npos) {
+      break;
     }
-    start = end + 1;
+    elems.emplace_back(str.substr(start, end - start));
+    start = str.find_first_not_of(delim, end);
+    if (start == std::string::npos) {
+      elems.emplace_back("");
+      return elems;
+    }
   }
-  if (start < str.size()) {
-    elems.emplace_back(str.substr(start));
-  }
+  elems.emplace_back(str.substr(start));
 
   return elems;
 }
