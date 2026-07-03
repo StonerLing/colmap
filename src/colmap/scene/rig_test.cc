@@ -63,7 +63,7 @@ TEST(ReadRigConfig, MissingImagePrefix) {
             {
               "cameras": [
                 {
-                    "ref_sensor": true,
+                    "ref_sensor": true
                 }
               ]
             }
@@ -78,11 +78,11 @@ TEST(ReadRigConfig, InvalidRefSensor) {
               "cameras": [
                 {
                     "image_prefix": "rig1/camera1/",
-                    "ref_sensor": true,
+                    "ref_sensor": true
                 },
                 {
                     "image_prefix": "rig1/camera2/",
-                    "ref_sensor": true,
+                    "ref_sensor": true
                 }
               ]
             }
@@ -93,10 +93,10 @@ TEST(ReadRigConfig, InvalidRefSensor) {
                 {
                   "cameras": [
                     {
-                        "image_prefix": "rig1/camera1/",
+                        "image_prefix": "rig1/camera1/"
                     },
                     {
-                        "image_prefix": "rig1/camera2/",
+                        "image_prefix": "rig1/camera2/"
                     }
                   ]
                 }
