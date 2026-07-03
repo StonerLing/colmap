@@ -8,7 +8,7 @@
         "boost-graph",
         "boost-heap",
         "boost-property-map",
-        "boost-property-tree",
+        "simdjson",
         {
             "name": "ceres",
             "features": [

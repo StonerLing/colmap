@@ -45,9 +45,6 @@
 #include "colmap/util/misc.h"
 #include "colmap/util/opengl_utils.h"
 
-#include <boost/property_tree/json_parser.hpp>
-#include <boost/property_tree/ptree.hpp>
-
 namespace colmap {
 namespace {
 

@@ -74,6 +74,7 @@ COLMAP_ADD_LIBRARY(
         colmap_util
         Eigen3::Eigen
         SQLite3::SQLite3
+        simdjson::simdjson
     PRIVATE_LINK_LIBS
         colmap_optim
 )

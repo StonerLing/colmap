@@ -184,6 +184,7 @@ jobs:
             libcurl4-openssl-dev \
             libmkl-full-dev \
             libcli11-dev \
+            libsimdjson-dev \
             xvfb
 
           # Fix issue in Ubuntu's openimageio CMake config.
