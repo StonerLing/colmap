@@ -31,8 +31,7 @@
 
 #include "colmap/geometry/pose.h"
 
-#include <boost/property_tree/json_parser.hpp>
-#include <boost/property_tree/ptree.hpp>
+#include <simdjson.h>
 
 namespace colmap {
 namespace {
@@ -262,72 +261,108 @@ void CopyCameraIntrinsics(const Camera& src, Camera& dst) {
 
 std::vector<RigConfig> ReadRigConfig(
     const std::filesystem::path& rig_config_path) {
-  boost::property_tree::ptree pt;
-  boost::property_tree::read_json(rig_config_path.string().c_str(), pt);
+  simdjson::ondemand::parser parser;
+  auto padded = simdjson::padded_string::load(rig_config_path.string());
+  THROW_CHECK_EQ(padded.error(), simdjson::SUCCESS)
+      << "Failed to read JSON file: " << rig_config_path;
 
   std::vector<RigConfig> configs;
-  for (const auto& rig_node : pt) {
-    RigConfig& config = configs.emplace_back();
+  auto doc = parser.iterate(padded.value());
+
+  for (auto rig_elem : doc.get_array()) {
+    simdjson::ondemand::object rig_obj;
+    THROW_CHECK_EQ(rig_elem.get(rig_obj), simdjson::SUCCESS);
+
+    RigConfig config;
     bool has_ref_sensor = false;
-    for (const auto& camera : rig_node.second.get_child("cameras")) {
-      RigConfig::RigCamera& config_camera = config.cameras.emplace_back();
 
-      config_camera.image_prefix =
-          camera.second.get<std::string>("image_prefix");
+    for (auto camera_elem : rig_obj["cameras"].get_array()) {
+      simdjson::ondemand::object camera_obj;
+      THROW_CHECK_EQ(camera_elem.get(camera_obj), simdjson::SUCCESS);
 
-      auto cam_from_rig_rotation_node =
-          camera.second.get_child_optional("cam_from_rig_rotation");
-      auto cam_from_rig_translation_node =
-          camera.second.get_child_optional("cam_from_rig_translation");
-      if (cam_from_rig_rotation_node && cam_from_rig_translation_node) {
-        Rigid3d cam_from_rig;
+      RigConfig::RigCamera config_camera;
 
-        int index = 0;
-        Eigen::Vector4d cam_from_rig_wxyz;
-        for (const auto& node : cam_from_rig_rotation_node.get()) {
-          cam_from_rig_wxyz[index++] = node.second.get_value<double>();
+      {
+        std::string_view image_prefix;
+        THROW_CHECK_EQ(camera_obj["image_prefix"].get(image_prefix),
+                       simdjson::SUCCESS)
+            << "Camera must have 'image_prefix'";
+        config_camera.image_prefix = std::string(image_prefix);
+      }
+
+      bool has_cam_from_rig_rotation = false;
+      Eigen::Vector4d cam_from_rig_wxyz;
+      {
+        simdjson::ondemand::value rot_val;
+        if (camera_obj["cam_from_rig_rotation"].get(rot_val) ==
+            simdjson::SUCCESS) {
+          has_cam_from_rig_rotation = true;
+          int idx = 0;
+          for (auto v : rot_val.get_array()) {
+            cam_from_rig_wxyz(idx++) = double(v);
+          }
         }
+      }
+
+      bool has_cam_from_rig_translation = false;
+      Eigen::Vector3d cam_from_rig_trans;
+      {
+        simdjson::ondemand::value trans_val;
+        if (camera_obj["cam_from_rig_translation"].get(trans_val) ==
+            simdjson::SUCCESS) {
+          has_cam_from_rig_translation = true;
+          int idx = 0;
+          for (auto v : trans_val.get_array()) {
+            cam_from_rig_trans(idx++) = double(v);
+          }
+        }
+      }
+
+      if (has_cam_from_rig_rotation && has_cam_from_rig_translation) {
+        Rigid3d cam_from_rig;
         cam_from_rig.rotation() = Eigen::Quaterniond(cam_from_rig_wxyz(0),
                                                      cam_from_rig_wxyz(1),
                                                      cam_from_rig_wxyz(2),
                                                      cam_from_rig_wxyz(3));
-
-        THROW_CHECK(cam_from_rig_translation_node);
-        index = 0;
-        for (const auto& node : cam_from_rig_translation_node.get()) {
-          cam_from_rig.translation()(index++) = node.second.get_value<double>();
-        }
+        cam_from_rig.translation() = cam_from_rig_trans;
         config_camera.cam_from_rig = cam_from_rig;
       }
 
-      auto ref_sensor_node = camera.second.get_child_optional("ref_sensor");
-      if (ref_sensor_node && ref_sensor_node.get().get_value<bool>()) {
-        THROW_CHECK(!cam_from_rig_rotation_node &&
-                    !cam_from_rig_translation_node)
-            << "Reference sensor must not have cam_from_rig";
-        THROW_CHECK(!has_ref_sensor)
-            << "Rig must only have one reference sensor";
-        config_camera.ref_sensor = true;
-        has_ref_sensor = true;
-      }
-
-      auto camera_model_name_node =
-          camera.second.get_child_optional("camera_model_name");
-      auto camera_params_node =
-          camera.second.get_child_optional("camera_params");
-      if (camera_model_name_node && camera_params_node) {
-        config_camera.camera = std::make_optional<Camera>();
-        config_camera.camera->model_id = CameraModelNameToId(
-            camera.second.get<std::string>("camera_model_name"));
-        config_camera.camera->has_prior_focal_length = true;
-        for (const auto& node : camera_params_node.get()) {
-          config_camera.camera->params.push_back(
-              node.second.get_value<double>());
+      {
+        simdjson::ondemand::value ref_val;
+        if (camera_obj["ref_sensor"].get(ref_val) == simdjson::SUCCESS) {
+          bool ref_sensor = ref_val.get_bool().value();
+          if (ref_sensor) {
+            THROW_CHECK(!has_cam_from_rig_rotation &&
+                        !has_cam_from_rig_translation)
+                << "Reference sensor must not have cam_from_rig";
+            THROW_CHECK(!has_ref_sensor)
+                << "Rig must only have one reference sensor";
+            config_camera.ref_sensor = true;
+            has_ref_sensor = true;
+          }
         }
       }
+
+      simdjson::ondemand::value model_val;
+      simdjson::ondemand::value params_val;
+      if (camera_obj["camera_model_name"].get(model_val) == simdjson::SUCCESS &&
+          camera_obj["camera_params"].get(params_val) == simdjson::SUCCESS) {
+        config_camera.camera.emplace();
+        std::string_view model_name = model_val.get_string();
+        config_camera.camera->model_id =
+            CameraModelNameToId(std::string(model_name));
+        config_camera.camera->has_prior_focal_length = true;
+        for (auto v : params_val.get_array()) {
+          config_camera.camera->params.push_back(double(v));
+        }
+      }
+
+      config.cameras.push_back(std::move(config_camera));
     }
 
     THROW_CHECK(has_ref_sensor) << "Rig must have one reference sensor";
+    configs.push_back(std::move(config));
   }
 
   return configs;

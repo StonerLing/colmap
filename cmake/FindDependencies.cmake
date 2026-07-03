@@ -20,6 +20,8 @@ find_package(Boost ${COLMAP_FIND_TYPE} COMPONENTS
              OPTIONAL_COMPONENTS
              system)
 
+find_package(simdjson ${COLMAP_FIND_TYPE})
+
 find_package(CLI11 ${COLMAP_FIND_TYPE})
 
 find_package(Eigen3 ${COLMAP_FIND_TYPE})

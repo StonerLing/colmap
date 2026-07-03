@@ -35,9 +35,6 @@
 #include "colmap/scene/rig.h"
 #include "colmap/util/file.h"
 
-#include <boost/property_tree/json_parser.hpp>
-#include <boost/property_tree/ptree.hpp>
-
 namespace colmap {
 
 int RunDatabaseCleaner(int argc, char** argv) {
