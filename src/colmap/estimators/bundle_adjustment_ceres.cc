@@ -968,6 +968,11 @@ class PosePriorBundleAdjuster : public CeresBundleAdjuster {
       PrintSolverSummary(ceres_summary, "Pose Prior Bundle adjustment report");
     }
 
+    // Compute optimization error w.r.t. prior positions.
+    if (VLOG_IS_ON(2)) {
+      PrintPositionError("Optimization error w.r.t. prior positions:");
+    }
+
     return CreateSummaryAndLogFailure(std::move(ceres_summary),
                                       "Pose prior bundle adjustment");
   }
@@ -1045,19 +1050,23 @@ class PosePriorBundleAdjuster : public CeresBundleAdjuster {
 
     // Compute alignment error w.r.t. prior positions.
     if (VLOG_IS_ON(2)) {
-      std::vector<double> verr2_wrt_prior;
-      verr2_wrt_prior.reserve(config_.NumImages());
-      for (const auto& pose_prior : pose_priors_) {
-        const auto& image = reconstruction_.Image(pose_prior.corr_data_id.id);
-        verr2_wrt_prior.push_back(
-            (image.ProjectionCenter() - pose_prior.position).squaredNorm());
-      }
-      VLOG(2) << "Alignment error w.r.t. prior positions:\n"
-              << "  - rmse:   " << std::sqrt(Mean(verr2_wrt_prior)) << '\n'
-              << "  - median: " << std::sqrt(Median(verr2_wrt_prior)) << '\n';
+      PrintPositionError("Alignment error w.r.t. prior positions:");
     }
 
     return true;
+  }
+
+  void PrintPositionError(std::string_view header) const {
+    std::vector<double> verr2_wrt_prior;
+    verr2_wrt_prior.reserve(config_.NumImages());
+    for (const auto& pose_prior : pose_priors_) {
+      const auto& image = reconstruction_.Image(pose_prior.corr_data_id.id);
+      verr2_wrt_prior.push_back(
+          (image.ProjectionCenter() - pose_prior.position).squaredNorm());
+    }
+    VLOG(2) << header << "\n"
+            << "  - rmse:   " << std::sqrt(Mean(verr2_wrt_prior)) << '\n'
+            << "  - median: " << std::sqrt(Median(verr2_wrt_prior)) << '\n';
   }
 
  private:
