@@ -232,6 +232,7 @@ void BindSfM(py::module& m) {
             .def_readwrite("random_seed", &Opts::random_seed)
             .def_readwrite("decompose_relative_pose",
                            &Opts::decompose_relative_pose)
+            .def_readwrite("use_prior_position", &Opts::use_prior_position)
             .def_readwrite("mapper", &Opts::mapper);
     MakeDataclass(PyOpts);
   }

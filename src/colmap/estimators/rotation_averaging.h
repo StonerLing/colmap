@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <Eigen/Core>
+#include <ceres/ceres.h>
 
 // Code is adapted from Theia's RobustRotationEstimator
 // (http://www.theia-sfm.org/). For gravity aligned rotation averaging, refer
@@ -156,4 +157,84 @@ bool RunRotationAveraging(const RotationEstimatorOptions& options,
                           Reconstruction& reconstruction,
                           const std::vector<PosePrior>& pose_priors);
 
+// Options for prior-baseline-based rotation alignment and refinement.
+struct PriorBaselineRotationRefinementOptions {
+  // Minimum prior baseline length to define a well-posed epipolar constraint.
+  double min_baseline_length = 1e-8;
+
+  // Maximum number of inlier matches per image pair used to build epipolar
+  // constraints.
+  size_t max_num_matches_per_pair = 50;
+
+  // Maximum stddev of prior baseline direction.
+  double max_prior_baseline_dir_stddev_deg = 5.0;
+
+  // Huber loss threshold for the baseline-direction alignment residuals.
+  double align_loss_threshold_deg = 2.0;
+
+  // The options for the alignment solver.
+  ceres::Solver::Options align_solver_options;
+
+  // The options for the refinement solver.
+  ceres::Solver::Options refine_solver_options;
+
+  PriorBaselineRotationRefinementOptions() {
+    align_solver_options.linear_solver_type = ceres::DENSE_QR;
+    align_solver_options.max_num_iterations = 50;
+    refine_solver_options.linear_solver_type = ceres::DENSE_QR;
+    refine_solver_options.max_num_iterations = 50;
+  }
+};
+
+// Aligns global rotations to prior positions and refines them under epipolar
+// (coplanarity) constraints. Constraints are accumulated via the Add* methods;
+// the pose graph and pose priors are consumed by the caller.
+class PriorBaselineRotationRefiner {
+ public:
+  // Constructs the refiner, reserving capacity for `num_pairs` image pairs
+  // (at most one baseline and one cam ray pair per pair).
+  explicit PriorBaselineRotationRefiner(
+      const PriorBaselineRotationRefinementOptions& options, size_t num_pairs);
+
+  // Adds the baseline direction from prior positions for an image pair.
+  void AddBaselineDirPrior(image_pair_t pair_id,
+                           const Eigen::Vector3d& baseline_dir_prior);
+
+  // Adds a baseline direction computed from the reconstruction's relative
+  // translations for an image pair.
+  void AddBaselineDir(image_pair_t pair_id,
+                      const Eigen::Vector3d& baseline_dir_in_world);
+
+  // Adds a single cam ray pair (one match) for an image pair. Matches beyond
+  // max_num_matches_per_pair per pair are skipped.
+  void AddCamRayPair(image_pair_t pair_id,
+                     const Eigen::Vector3d& cam_ray1,
+                     const Eigen::Vector3d& cam_ray2);
+
+  // Solves for the rotation (prior_from_src) that aligns baseline directions
+  // from the reconstruction with those from prior positions, and applies it as
+  // a similarity transform to the reconstruction. Returns false on failure.
+  bool Align(Reconstruction& reconstruction);
+
+  // Refines the absolute rotations of reference sensors under the accumulated
+  // epipolar constraints. Only images registered in the reconstruction are
+  // optimized. Returns false on failure.
+  bool Refine(Reconstruction& reconstruction);
+
+ private:
+  PriorBaselineRotationRefinementOptions options_;
+
+  // Baseline directions from the reconstruction's relative translations.
+  FlatHashMap<image_pair_t, Eigen::Vector3d> baseline_dirs_in_world_;
+
+  // Baseline directions from prior positions.
+  FlatHashMap<image_pair_t, Eigen::Vector3d> baseline_dirs_prior_;
+
+  struct CamRayPair {
+    std::vector<Eigen::Vector3d> cam_rays1;
+    std::vector<Eigen::Vector3d> cam_rays2;
+  };
+  // Cam ray pairs of the inlier matches.
+  FlatHashMap<image_pair_t, CamRayPair> cam_ray_pairs_;
+};
 }  // namespace colmap

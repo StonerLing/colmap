@@ -2,6 +2,7 @@
 
 #include "colmap/estimators/bundle_adjustment_caspar.h"
 #include "colmap/estimators/rotation_averaging.h"
+#include "colmap/math/math.h"
 #include "colmap/math/union_find.h"
 #include "colmap/scene/projection.h"
 #include "colmap/sfm/incremental_mapper.h"
@@ -339,6 +340,148 @@ bool GlobalMapper::GlobalPositioning(const GlobalPositionerOptions& options,
   return true;
 }
 
+bool GlobalMapper::RefineGlobalRotationsWithPriorBaselines(
+    const PriorBaselineRotationRefinementOptions& options) {
+  const auto& pose_priors = database_cache_->PosePriors();
+  const std::size_t num_prior_positions = std::count_if(
+      pose_priors.cbegin(), pose_priors.cend(), [](const PosePrior& prior) {
+        return prior.HasPosition();
+      });
+  if (num_prior_positions < 2) {
+    LOG(ERROR) << "Could not refine rotations with " << num_prior_positions
+               << " prior positions";
+    return false;
+  }
+
+  if (reconstruction_->NumRegImages() == 0) {
+    LOG(ERROR) << "Empty registered image to refine rotations.";
+    return false;
+  }
+
+  FlatHashSet<image_t> reg_image_ids;
+  for (const image_t image_id : reconstruction_->RegImageIds()) {
+    reg_image_ids.insert(image_id);
+  }
+
+  FlatHashMap<image_t, PosePrior> image_id_to_pose_priors;
+  for (const PosePrior& pose_prior : pose_priors) {
+    if (pose_prior.corr_data_id.sensor_id.type != SensorType::CAMERA) {
+      continue;
+    }
+    image_id_to_pose_priors[pose_prior.corr_data_id.id] = pose_prior;
+  }
+
+  PriorBaselineRotationRefiner refiner(options, pose_graph_->NumEdges());
+
+  for (const auto& [pair_id, edge] : pose_graph_->Edges()) {
+    const auto [image_id1, image_id2] = PairIdToImagePair(pair_id);
+
+    if (!reg_image_ids.count(image_id1) || !reg_image_ids.count(image_id2)) {
+      continue;
+    }
+
+    const auto itr1 = image_id_to_pose_priors.find(image_id1);
+    const auto itr2 = image_id_to_pose_priors.find(image_id2);
+    if (itr1 == image_id_to_pose_priors.end() ||
+        itr2 == image_id_to_pose_priors.end()) {
+      continue;
+    }
+
+    const PosePrior& pose_prior1 = itr1->second;
+    const PosePrior& pose_prior2 = itr2->second;
+
+    if (!pose_prior1.HasPosition() || !pose_prior2.HasPosition()) {
+      continue;
+    }
+
+    if (!(pose_prior1.coordinate_system ==
+          PosePrior::CoordinateSystem::CARTESIAN) ||
+        !(pose_prior2.coordinate_system ==
+          PosePrior::CoordinateSystem::CARTESIAN)) {
+      continue;
+    }
+
+    // Baseline direction for the rotation gauge alignment.
+    const Image& image1 = reconstruction_->Image(image_id1);
+    const Image& image2 = reconstruction_->Image(image_id2);
+
+    // Epipolar constraints for the rotation refinement. Only the global
+    // rotations of reference sensors are optimized, for which cam_from_world
+    // equals rig_from_world.
+    if (!image1.IsRefInFrame() || !image2.IsRefInFrame()) {
+      continue;
+    }
+
+    const Eigen::Vector3d baseline_dir_in_world =
+        -(image2.CamFromWorld().rotation().inverse() *
+          edge.cam2_from_cam1.translation());
+    const Eigen::Vector3d baseline_prior =
+        pose_prior2.position - pose_prior1.position;
+    const Eigen::Vector3d baseline_dir_prior = baseline_prior.normalized();
+
+    const double baseline_length = baseline_prior.norm();
+    if (baseline_length < options.min_baseline_length) {
+      continue;
+    }
+
+    if (pose_prior1.HasPositionCov() && pose_prior2.HasPositionCov()) {
+      const double baseline_prior_stddev =
+          std::sqrt((pose_prior1.position_covariance +
+                     pose_prior2.position_covariance)
+                        .trace()) /
+          baseline_length;
+
+      if (baseline_prior_stddev >
+          DegToRad(options.max_prior_baseline_dir_stddev_deg)) {
+        continue;
+      }
+    }
+
+    refiner.AddBaselineDirPrior(pair_id, baseline_dir_prior);
+    refiner.AddBaselineDir(pair_id, baseline_dir_in_world);
+
+    TwoViewGeometry two_view_geometry =
+        database_cache_->CorrespondenceGraph()->ExtractTwoViewGeometry(
+            image_id1, image_id2, /*extract_inlier_matches=*/true);
+    if (two_view_geometry.inlier_matches.empty()) {
+      continue;
+    }
+
+    const Camera& camera1 = reconstruction_->Camera(image1.CameraId());
+    const Camera& camera2 = reconstruction_->Camera(image2.CameraId());
+
+    std::size_t num_matches = 0;
+    for (const FeatureMatch& match : two_view_geometry.inlier_matches) {
+      ++num_matches;
+      if (num_matches > options.max_num_matches_per_pair) {
+        continue;
+      }
+
+      const auto cam_ray1 =
+          camera1.CamRayFromImg(image1.Point2D(match.point2D_idx1).xy);
+      const auto cam_ray2 =
+          camera2.CamRayFromImg(image2.Point2D(match.point2D_idx2).xy);
+      if (!cam_ray1.has_value() || !cam_ray2.has_value()) {
+        continue;
+      }
+
+      refiner.AddCamRayPair(pair_id, cam_ray1.value(), cam_ray2.value());
+    }
+  }
+
+  if (!refiner.Align(*reconstruction_)) {
+    LOG(ERROR) << "Failed to align baseline directions to prior positions";
+    return false;
+  }
+
+  if (!refiner.Refine(*reconstruction_)) {
+    LOG(ERROR) << "Failed to refine rotations with prior baselines";
+    return false;
+  }
+
+  return true;
+}
+
 bool GlobalMapper::IterativeBundleAdjustment(
     const BundleAdjustmentOptions& options,
     double max_normalized_reproj_error,
@@ -532,6 +675,18 @@ bool GlobalMapper::Solve(const GlobalMapperOptions& options,
     }
     LOG(INFO) << "Rotation averaging done in " << run_timer.ElapsedSeconds()
               << " seconds";
+  }
+
+  if (options.refine_rotations_with_prior_baselines) {
+    LOG_HEADING2("Refining global rotations with prior positions");
+    Timer run_timer;
+    run_timer.Start();
+    if (!RefineGlobalRotationsWithPriorBaselines(
+            options.prior_baseline_rotation_refinement)) {
+      return false;
+    }
+    LOG(INFO) << "Global rotations refinement done in "
+              << run_timer.ElapsedSeconds() << " seconds";
   }
 
   // Track establishment and selection

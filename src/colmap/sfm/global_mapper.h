@@ -60,6 +60,11 @@ struct GlobalMapperOptions {
     return opts;
   }();
 
+  // Whether to resolve the rotation gauge ambiguity and refine absolute
+  // rotations using prior baselines.
+  bool refine_rotations_with_prior_baselines = false;
+  PriorBaselineRotationRefinementOptions prior_baseline_rotation_refinement;
+
   // Track establishment options.
   // Max pixel distance between observations of the same track within one image.
   double track_intra_image_consistency_threshold = 10.;
@@ -136,6 +141,12 @@ class GlobalMapper {
                          double max_angular_reproj_error_deg,
                          double max_normalized_reproj_error,
                          double min_tri_angle_deg);
+
+  // Refine global rotations using prior baselines: resolves the rotation gauge
+  // ambiguity via baseline-direction alignment, then refines rotations under
+  // epipolar (coplanarity) constraints.
+  bool RefineGlobalRotationsWithPriorBaselines(
+      const PriorBaselineRotationRefinementOptions& options);
 
   // Run iterative bundle adjustment to refine poses and structure. The optional
   // `on_progress` callback is invoked after each iteration and returns true if

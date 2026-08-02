@@ -61,6 +61,9 @@ struct GlobalPipelineOptions {
   // Whether to decompose relative poses from two-view geometries.
   bool decompose_relative_pose = true;
 
+  // Whether to use position priors for the global mapper.
+  bool use_prior_position = false;
+
   // Options for the global mapper.
   GlobalMapperOptions mapper;
 };
