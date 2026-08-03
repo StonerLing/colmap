@@ -1,11 +1,17 @@
 #include "colmap/estimators/global_positioning.h"
 
 #include "colmap/estimators/cost_functions/motion_averaging.h"
+#include "colmap/estimators/cost_functions/pose_prior.h"
+#include "colmap/estimators/cost_functions/utils.h"
+#include "colmap/math/math.h"
 #include "colmap/math/random.h"
+#include "colmap/scene/camera.h"
 #include "colmap/util/cuda.h"
 #include "colmap/util/hash_containers.h"
 #include "colmap/util/misc.h"
 #include "colmap/util/threading.h"
+
+#include <optional>
 
 namespace colmap {
 namespace {
@@ -14,6 +20,43 @@ Eigen::Vector3d RandVector3d(double low, double high) {
   return Eigen::Vector3d(RandomUniformReal(low, high),
                          RandomUniformReal(low, high),
                          RandomUniformReal(low, high));
+}
+
+// Computes the covariance of a BATA residual when prior positions are used.
+// The angular measurement noise of a camera with a prior focal length is
+// inversely proportional to the focal length, so the residual standard
+// deviation is the reciprocal of the focal length. Returns std::nullopt if the
+// camera has no prior focal length.
+std::optional<Eigen::Matrix3d> PriorPositionBataCovariance(
+    const Camera& camera) {
+  if (!camera.has_prior_focal_length) {
+    return std::nullopt;
+  }
+  const double stddev = 1.0 / camera.MeanFocalLength();
+  return stddev * stddev * Eigen::Matrix3d::Identity();
+}
+
+// Returns the world position of the frame center implied by a pose prior on
+// the sensor. For non-reference sensors, the fixed cam_from_rig offset is
+// folded into the prior. Returns std::nullopt if the sensor position cannot be
+// derived from the frame center alone (e.g., when cam_from_rig is estimated).
+std::optional<Eigen::Vector3d> FrameCenterPriorPosition(
+    const Reconstruction& reconstruction,
+    const Image& image,
+    const PosePrior& pose_prior) {
+  Eigen::Vector3d prior_position = pose_prior.position;
+  if (!image.IsRefInFrame()) {
+    const Rigid3d& cam_from_rig =
+        reconstruction.Rig(image.FramePtr()->RigId())
+            .SensorFromRig(image.CameraPtr()->SensorId());
+    if (cam_from_rig.translation().hasNaN()) {
+      return std::nullopt;
+    }
+    const Eigen::Matrix3d world_from_rig_rotation =
+        image.FramePtr()->RigFromWorld().rotation().toRotationMatrix().transpose();
+    prior_position -= world_from_rig_rotation * cam_from_rig.translation();
+  }
+  return prior_position;
 }
 
 }  // namespace
@@ -26,7 +69,8 @@ GlobalPositioner::GlobalPositioner(const GlobalPositionerOptions& options)
 }
 
 bool GlobalPositioner::Solve(const PoseGraph& pose_graph,
-                             Reconstruction& reconstruction) {
+                             Reconstruction& reconstruction,
+                             const std::vector<PosePrior>& pose_priors) {
   if (reconstruction.NumImages() == 0) {
     LOG(ERROR) << "Number of images = " << reconstruction.NumImages();
     return false;
@@ -38,15 +82,28 @@ bool GlobalPositioner::Solve(const PoseGraph& pose_graph,
 
   LOG(INFO) << "Setting up the global positioner problem";
 
+  // Whether prior positions are used to constrain and initialize positions.
+  const bool use_prior_position =
+      options_.use_prior_position && !pose_priors.empty();
+
   // Setup the problem.
   SetupProblem(pose_graph, reconstruction);
 
-  // Initialize camera translations to be random.
-  // Also, convert the camera pose translation to be the camera center.
-  InitializeRandomPositions(pose_graph, reconstruction);
+  // Initialize camera translations to be random, or from the pose priors if
+  // prior positions are used. Also, convert the camera pose translation to be
+  // the camera center.
+  InitializeRandomPositions(
+      pose_graph, reconstruction, use_prior_position, pose_priors);
 
   // Add the point to camera constraints to the problem.
-  AddPointToCameraConstraints(reconstruction);
+  AddPointToCameraConstraints(reconstruction, use_prior_position);
+
+  // Add the prior position constraints to the problem.
+  bool added_prior_position_constraints = false;
+  if (use_prior_position) {
+    added_prior_position_constraints =
+        AddPriorPositionConstraints(reconstruction, pose_priors);
+  }
 
   if (options_.use_parameter_block_ordering) {
     AddCamerasAndPointsToParameterGroups(reconstruction);
@@ -54,7 +111,7 @@ bool GlobalPositioner::Solve(const PoseGraph& pose_graph,
 
   // Parameterize the variables, set image poses / tracks / scales to be
   // constant if desired
-  ParameterizeVariables(reconstruction);
+  ParameterizeVariables(reconstruction, added_prior_position_constraints);
 
   LOG(INFO) << "Solving the global positioner problem";
 
@@ -71,6 +128,9 @@ bool GlobalPositioner::Solve(const PoseGraph& pose_graph,
   }
 
   ConvertBackResults(reconstruction);
+  if (VLOG_IS_ON(2)) {
+    PrintPositionError(reconstruction, pose_priors);
+  }
   return summary.IsSolutionUsable();
 }
 
@@ -97,7 +157,10 @@ void GlobalPositioner::SetupProblem(const PoseGraph& pose_graph,
 }
 
 void GlobalPositioner::InitializeRandomPositions(
-    const PoseGraph& pose_graph, Reconstruction& reconstruction) {
+    const PoseGraph& pose_graph,
+    Reconstruction& reconstruction,
+    bool use_prior_position,
+    const std::vector<PosePrior>& pose_priors) {
   FlatHashSet<frame_t> constrained_positions;
   constrained_positions.reserve(reconstruction.NumFrames());
   for (const auto& [pair_id, edge] : pose_graph.ValidEdges()) {
@@ -119,10 +182,39 @@ void GlobalPositioner::InitializeRandomPositions(
     }
   }
 
+  // Map pose priors to frame center positions for initialization.
+  FlatHashMap<frame_t, Eigen::Vector3d> prior_positions;
+  if (use_prior_position) {
+    for (const auto& pose_prior : pose_priors) {
+      if (!pose_prior.HasPosition() ||
+          pose_prior.corr_data_id.sensor_id.type != SensorType::CAMERA) {
+        continue;
+      }
+      const image_t image_id = pose_prior.corr_data_id.id;
+      if (!reconstruction.ExistsImage(image_id)) {
+        continue;
+      }
+      const Image& image = reconstruction.Image(image_id);
+      if (!image.HasPose()) {
+        continue;
+      }
+      const std::optional<Eigen::Vector3d> frame_center_prior_position =
+          FrameCenterPriorPosition(reconstruction, image, pose_prior);
+      if (frame_center_prior_position.has_value()) {
+        prior_positions[image.FrameId()] = *frame_center_prior_position;
+      }
+    }
+  }
+
   // Initialize frame centers in temporary storage.
   // The reconstruction poses remain in cam_from_world convention.
   for (const auto& [frame_id, frame] : reconstruction.Frames()) {
     if (constrained_positions.find(frame_id) == constrained_positions.end()) {
+      continue;
+    }
+    const auto prior_itr = prior_positions.find(frame_id);
+    if (prior_itr != prior_positions.end()) {
+      frame_centers_[frame_id] = prior_itr->second;
       continue;
     }
     if (options_.generate_random_positions && options_.optimize_positions) {
@@ -132,11 +224,12 @@ void GlobalPositioner::InitializeRandomPositions(
     }
   }
 
-  VLOG(2) << "Constrained positions: " << constrained_positions.size();
+  VLOG(2) << "Constrained positions: " << constrained_positions.size()
+          << ", prior positions: " << prior_positions.size();
 }
 
 void GlobalPositioner::AddPointToCameraConstraints(
-    Reconstruction& reconstruction) {
+    Reconstruction& reconstruction, bool use_prior_position) {
   VLOG(2) << reconstruction.NumPoints3D()
           << " point to camera constraints were added to the position "
              "estimation problem.";
@@ -152,12 +245,13 @@ void GlobalPositioner::AddPointToCameraConstraints(
       continue;
     }
 
-    AddPoint3DToProblem(point3D_id, reconstruction);
+    AddPoint3DToProblem(point3D_id, reconstruction, use_prior_position);
   }
 }
 
 void GlobalPositioner::AddPoint3DToProblem(point3D_t point3D_id,
-                                           Reconstruction& reconstruction) {
+                                           Reconstruction& reconstruction,
+                                           bool use_prior_position) {
   const bool random_initialization =
       options_.optimize_points && options_.generate_random_points;
 
@@ -210,10 +304,22 @@ void GlobalPositioner::AddPoint3DToProblem(point3D_t point3D_id,
             ? loss_function_ptcam_calibrated_.get()
             : loss_function_ptcam_uncalibrated_.get();
 
+    // When prior positions are used, weight the BATA residuals with the
+    // measurement covariance derived from the prior focal length.
+    const std::optional<Eigen::Matrix3d> bata_cov =
+        use_prior_position ? PriorPositionBataCovariance(camera) : std::nullopt;
+
     // If the image is not part of a camera rig, use the standard BATA error
     if (image.IsRefInFrame()) {
-      ceres::CostFunction* cost_function =
-          BATAPairwiseDirectionCostFunctor::Create(cam_from_point3D_dir);
+      ceres::CostFunction* cost_function = nullptr;
+      if (bata_cov.has_value()) {
+        cost_function =
+            CovarianceWeightedCostFunctor<BATAPairwiseDirectionCostFunctor>::
+                Create(*bata_cov, cam_from_point3D_dir);
+      } else {
+        cost_function =
+            BATAPairwiseDirectionCostFunctor::Create(cam_from_point3D_dir);
+      }
 
       problem_->AddResidualBlock(cost_function,
                                  loss_function,
@@ -232,9 +338,17 @@ void GlobalPositioner::AddPoint3DToProblem(point3D_t point3D_id,
             image.CamFromWorld().rotation().inverse() *
             cam_from_rig.translation();
 
-        ceres::CostFunction* cost_function =
-            RigBATAPairwiseDirectionConstantRigCostFunctor::Create(
-                cam_from_point3D_dir, cam_from_rig_dir);
+        ceres::CostFunction* cost_function = nullptr;
+        if (bata_cov.has_value()) {
+          cost_function =
+              CovarianceWeightedCostFunctor<
+                  RigBATAPairwiseDirectionConstantRigCostFunctor>::
+                  Create(*bata_cov, cam_from_point3D_dir, cam_from_rig_dir);
+        } else {
+          cost_function =
+              RigBATAPairwiseDirectionConstantRigCostFunctor::Create(
+                  cam_from_point3D_dir, cam_from_rig_dir);
+        }
 
         problem_->AddResidualBlock(cost_function,
                                    loss_function,
@@ -254,10 +368,19 @@ void GlobalPositioner::AddPoint3DToProblem(point3D_t point3D_id,
           cams_in_rig_[sensor_id] = Eigen::Vector3d::Zero();
         }
 
-        ceres::CostFunction* cost_function =
-            RigBATAPairwiseDirectionCostFunctor::Create(
-                cam_from_point3D_dir,
-                image.FramePtr()->RigFromWorld().rotation());
+        ceres::CostFunction* cost_function = nullptr;
+        if (bata_cov.has_value()) {
+          cost_function =
+              CovarianceWeightedCostFunctor<
+                  RigBATAPairwiseDirectionCostFunctor>::
+                  Create(*bata_cov,
+                         cam_from_point3D_dir,
+                         image.FramePtr()->RigFromWorld().rotation());
+        } else {
+          cost_function = RigBATAPairwiseDirectionCostFunctor::Create(
+              cam_from_point3D_dir,
+              image.FramePtr()->RigFromWorld().rotation());
+        }
 
         problem_->AddResidualBlock(cost_function,
                                    loss_function,
@@ -270,6 +393,94 @@ void GlobalPositioner::AddPoint3DToProblem(point3D_t point3D_id,
 
     problem_->SetParameterLowerBound(&scale, 0, 1e-5);
   }
+}
+
+bool GlobalPositioner::AddPriorPositionConstraints(
+    const Reconstruction& reconstruction,
+    const std::vector<PosePrior>& pose_priors) {
+  loss_function_prior_position_ =
+      std::make_shared<ceres::HuberLoss>(options_.pp_loss_scale);
+
+  const Eigen::Matrix3d fallback_cov =
+      options_.pp_fallback_stddev * options_.pp_fallback_stddev *
+      Eigen::Matrix3d::Identity();
+
+  size_t num_added_constraints = 0;
+  for (const auto& pose_prior : pose_priors) {
+    if (!pose_prior.HasPosition()) {
+      continue;
+    }
+    if (pose_prior.corr_data_id.sensor_id.type != SensorType::CAMERA) {
+      continue;
+    }
+    const image_t image_id = pose_prior.corr_data_id.id;
+    if (!reconstruction.ExistsImage(image_id)) {
+      continue;
+    }
+    const Image& image = reconstruction.Image(image_id);
+    if (!image.HasPose()) {
+      continue;
+    }
+
+    const frame_t frame_id = image.FrameId();
+    const auto frame_center_itr = frame_centers_.find(frame_id);
+    if (frame_center_itr == frame_centers_.end()) {
+      continue;
+    }
+    double* frame_center = frame_center_itr->second.data();
+    if (!problem_->HasParameterBlock(frame_center)) {
+      continue;
+    }
+
+    const std::optional<Eigen::Vector3d> frame_center_prior_position =
+        FrameCenterPriorPosition(reconstruction, image, pose_prior);
+    if (!frame_center_prior_position.has_value()) {
+      continue;
+    }
+
+    const Eigen::Matrix3d position_cov =
+        pose_prior.HasPositionCov() ? pose_prior.position_covariance
+                                    : fallback_cov;
+    ceres::CostFunction* cost_function =
+        CovarianceWeightedCostFunctor<AbsolutePositionPriorCostFunctor>::Create(
+            position_cov, *frame_center_prior_position);
+    problem_->AddResidualBlock(
+        cost_function, loss_function_prior_position_.get(), frame_center);
+    num_added_constraints++;
+  }
+
+  VLOG(2) << num_added_constraints
+          << " prior position constraints were added to the position "
+             "estimation problem.";
+
+  return num_added_constraints > 0;
+}
+
+void GlobalPositioner::PrintPositionError(
+    const Reconstruction& reconstruction,
+    const std::vector<PosePrior>& pose_priors) const {
+  std::vector<double> verr2_wrt_prior;
+  verr2_wrt_prior.reserve(pose_priors.size());
+  for (const auto& pose_prior : pose_priors) {
+    if (!pose_prior.HasPosition() ||
+        pose_prior.corr_data_id.sensor_id.type != SensorType::CAMERA) {
+      continue;
+    }
+    const image_t image_id = pose_prior.corr_data_id.id;
+    if (!reconstruction.ExistsImage(image_id)) {
+      continue;
+    }
+    verr2_wrt_prior.push_back(
+        (reconstruction.Image(image_id).ProjectionCenter() - pose_prior.position)
+            .squaredNorm());
+  }
+  if (verr2_wrt_prior.empty()) {
+    return;
+  }
+  LOG(INFO) << "Optimization error w.r.t. prior positions:"
+            << "\n"
+            << "  - rmse:   " << std::sqrt(Mean(verr2_wrt_prior)) << '\n'
+            << "  - median: " << std::sqrt(Median(verr2_wrt_prior));
 }
 
 void GlobalPositioner::AddCamerasAndPointsToParameterGroups(
@@ -310,7 +521,8 @@ void GlobalPositioner::AddCamerasAndPointsToParameterGroups(
   }
 }
 
-void GlobalPositioner::ParameterizeVariables(Reconstruction& reconstruction) {
+void GlobalPositioner::ParameterizeVariables(
+    Reconstruction& reconstruction, bool added_prior_position_constraints) {
   // For the global positioning, do not set any camera to be constant for easier
   // convergence
 
@@ -351,10 +563,14 @@ void GlobalPositioner::ParameterizeVariables(Reconstruction& reconstruction) {
     }
   }
   // Set the first scale to be constant to remove the gauge ambiguity.
-  for (double& scale : scales_) {
-    if (problem_->HasParameterBlock(&scale)) {
-      problem_->SetParameterBlockConstant(&scale);
-      break;
+  // Prior position constraints provide the gauge, so the scale is not fixed
+  // in that case.
+  if (!added_prior_position_constraints) {
+    for (double& scale : scales_) {
+      if (problem_->HasParameterBlock(&scale)) {
+        problem_->SetParameterBlockConstant(&scale);
+        break;
+      }
     }
   }
 
@@ -442,9 +658,10 @@ void GlobalPositioner::ConvertBackResults(Reconstruction& reconstruction) {
 
 bool RunGlobalPositioning(const GlobalPositionerOptions& options,
                           const PoseGraph& pose_graph,
-                          Reconstruction& reconstruction) {
+                          Reconstruction& reconstruction,
+                          const std::vector<PosePrior>& pose_priors) {
   GlobalPositioner positioner(options);
-  return positioner.Solve(pose_graph, reconstruction);
+  return positioner.Solve(pose_graph, reconstruction, pose_priors);
 }
 
 }  // namespace colmap

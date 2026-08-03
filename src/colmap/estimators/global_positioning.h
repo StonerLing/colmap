@@ -1,10 +1,14 @@
 #pragma once
 
+#include "colmap/geometry/pose_prior.h"
+#include "colmap/math/math.h"
 #include "colmap/scene/pose_graph.h"
 #include "colmap/scene/reconstruction.h"
 #include "colmap/util/hash_containers.h"
 
+#include <cmath>
 #include <string>
+#include <vector>
 
 #include <ceres/ceres.h>
 
@@ -45,6 +49,17 @@ struct GlobalPositionerOptions {
   // Disable for deterministic behavior when using a fixed random seed.
   bool use_parameter_block_ordering = true;
 
+  // Whether to use prior positions.
+  bool use_prior_position = false;
+
+  // Prior position options. The options are only used if
+  // use_prior_position is true.
+  // Huber loss scale for the prior position residuals.
+  double pp_loss_scale = std::sqrt(kChiSquare95ThreeDof);
+  // Fallback standard deviation used when a pose prior provides no position
+  // covariance.
+  double pp_fallback_stddev = 1.0;
+
   // The options for the solver
   ceres::Solver::Options solver_options;
 
@@ -66,7 +81,9 @@ class GlobalPositioner {
   // Returns true if the optimization was a success, false if there was a
   // failure.
   // Assume tracks here are already filtered
-  bool Solve(const PoseGraph& pose_graph, Reconstruction& reconstruction);
+  bool Solve(const PoseGraph& pose_graph,
+             Reconstruction& reconstruction,
+             const std::vector<PosePrior>& pose_priors = {});
 
   GlobalPositionerOptions& GetOptions() { return options_; }
 
@@ -74,22 +91,37 @@ class GlobalPositioner {
   void SetupProblem(const PoseGraph& pose_graph,
                     const Reconstruction& reconstruction);
 
-  // Initialize all cameras to be random.
+  // Initialize all cameras to be random. If use_prior_position is set, frame
+  // centers with a corresponding pose prior are initialized from the prior.
   void InitializeRandomPositions(const PoseGraph& pose_graph,
-                                 Reconstruction& reconstruction);
+                                 Reconstruction& reconstruction,
+                                 bool use_prior_position,
+                                 const std::vector<PosePrior>& pose_priors);
 
   // Add tracks to the problem
-  void AddPointToCameraConstraints(Reconstruction& reconstruction);
+  void AddPointToCameraConstraints(Reconstruction& reconstruction,
+                                   bool use_prior_position);
+
+  // Add prior position constraints to the problem. Returns true if at least
+  // one constraint was added.
+  bool AddPriorPositionConstraints(const Reconstruction& reconstruction,
+                                   const std::vector<PosePrior>& pose_priors);
+
+  // Print the error of the optimized camera positions w.r.t. the pose priors.
+  void PrintPositionError(const Reconstruction& reconstruction,
+                          const std::vector<PosePrior>& pose_priors) const;
 
   // Add a single point3D to the problem
   void AddPoint3DToProblem(point3D_t point3D_id,
-                           Reconstruction& reconstruction);
+                           Reconstruction& reconstruction,
+                           bool use_prior_position);
 
   // Set the parameter groups
   void AddCamerasAndPointsToParameterGroups(Reconstruction& reconstruction);
 
   // Parameterize the variables, set some variables to be constant if desired
-  void ParameterizeVariables(Reconstruction& reconstruction);
+  void ParameterizeVariables(Reconstruction& reconstruction,
+                             bool added_prior_position_constraints = false);
 
   // During the optimization, the camera translation is set to be the camera
   // center Convert the results back to camera poses
@@ -103,6 +135,10 @@ class GlobalPositioner {
   std::shared_ptr<ceres::LossFunction> loss_function_;
   std::shared_ptr<ceres::LossFunction> loss_function_ptcam_uncalibrated_;
   std::shared_ptr<ceres::LossFunction> loss_function_ptcam_calibrated_;
+
+  // Loss function for the prior position constraints. Kept as a member because
+  // the problem does not take ownership of the loss function.
+  std::shared_ptr<ceres::LossFunction> loss_function_prior_position_;
 
   // Auxiliary scale variables.
   std::vector<double> scales_;
@@ -120,6 +156,7 @@ class GlobalPositioner {
 // Solve global positioning using point-to-camera constraints.
 bool RunGlobalPositioning(const GlobalPositionerOptions& options,
                           const PoseGraph& pose_graph,
-                          Reconstruction& reconstruction);
+                          Reconstruction& reconstruction,
+                          const std::vector<PosePrior>& pose_priors = {});
 
 }  // namespace colmap
