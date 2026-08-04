@@ -165,8 +165,14 @@ void GlobalPositioner::InitializeRandomPositions(
   constrained_positions.reserve(reconstruction.NumFrames());
   for (const auto& [pair_id, edge] : pose_graph.ValidEdges()) {
     const auto [image_id1, image_id2] = PairIdToImagePair(pair_id);
-    constrained_positions.insert(reconstruction.Image(image_id1).FrameId());
-    constrained_positions.insert(reconstruction.Image(image_id2).FrameId());
+    const Image& image1 = reconstruction.Image(image_id1);
+    const Image& image2 = reconstruction.Image(image_id2);
+    if (image1.HasPose()) {
+      constrained_positions.insert(image1.FrameId());
+    }
+    if (image2.HasPose()) {
+      constrained_positions.insert(image2.FrameId());
+    }
   }
 
   for (const auto& [point3D_id, point3D] : reconstruction.Points3D()) {
@@ -470,9 +476,12 @@ void GlobalPositioner::PrintPositionError(
     if (!reconstruction.ExistsImage(image_id)) {
       continue;
     }
+    const Image& image = reconstruction.Image(image_id);
+    if (!image.HasPose()) {
+      continue;
+    }
     verr2_wrt_prior.push_back(
-        (reconstruction.Image(image_id).ProjectionCenter() - pose_prior.position)
-            .squaredNorm());
+        (image.ProjectionCenter() - pose_prior.position).squaredNorm());
   }
   if (verr2_wrt_prior.empty()) {
     return;
@@ -638,6 +647,9 @@ void GlobalPositioner::ParameterizeVariables(
 void GlobalPositioner::ConvertBackResults(Reconstruction& reconstruction) {
   // Convert optimized frame centers back to rig_from_world translations.
   for (const auto& [frame_id, center] : frame_centers_) {
+    if (!reconstruction.Frame(frame_id).HasPose()) {
+      continue;
+    }
     Rigid3d& rig_from_world = reconstruction.Frame(frame_id).RigFromWorld();
     rig_from_world.translation() = rig_from_world.rotation() * -center;
   }
