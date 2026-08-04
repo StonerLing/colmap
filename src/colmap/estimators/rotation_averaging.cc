@@ -10,6 +10,7 @@
 #include "colmap/util/hash_containers.h"
 
 #include <algorithm>
+#include <limits>
 #include <queue>
 
 #include <ceres/ceres.h>
@@ -727,7 +728,7 @@ bool RunRotationAveraging(const RotationEstimatorOptions& options,
 }
 
 namespace {
-void PrintBaselineAlignmentError(
+double ComputeBaselineAlignmentError(
     const FlatHashMap<image_pair_t, Eigen::Vector3d>& baseline_dirs_in_world,
     const FlatHashMap<image_pair_t, Eigen::Vector3d>& baseline_dir_priors,
     const Eigen::Quaterniond& prior_from_src) {
@@ -753,14 +754,19 @@ void PrintBaselineAlignmentError(
         angle_errors_rad.cend(),
         0.0,
         [](double res, double angle) { return res + angle * angle; });
-    const double rmse_rad = std::sqrt(sum_squared / angle_errors_rad.size());
-    const double median_rad = Median(angle_errors_rad);
+    const double rmse_deg =
+        RadToDeg(std::sqrt(sum_squared / angle_errors_rad.size()));
+    const double median_deg = RadToDeg(Median(angle_errors_rad));
 
     VLOG(2) << "Baseline alignment error w.r.t prior positions:\n"
-            << "  - rmse:   " << RadToDeg(rmse_rad) << " deg\n"
-            << "  - median: " << RadToDeg(median_rad) << " deg\n";
+            << "  - rmse:   " << rmse_deg << " deg\n"
+            << "  - median: " << median_deg << " deg\n";
+
+    return median_deg;
   } else {
     VLOG(2) << "No valid baseline pairs for error evaluation.";
+
+    return std::numeric_limits<double>::max();
   }
 }
 }  // namespace
@@ -838,14 +844,17 @@ bool PriorBaselineRotationRefiner::Align(Reconstruction& reconstruction) {
     return false;
   }
 
+  constexpr double kMaxAlignmentErrorDeg = 5.0;
+  const double error =ComputeBaselineAlignmentError(
+        baseline_dirs_in_world_, baseline_dirs_prior_, prior_from_src);
+  if(error > kMaxAlignmentErrorDeg){
+    return false;
+  }
+
   prior_from_src.normalize();
   Sim3d tgt_from_src(1, prior_from_src, Eigen::Vector3d::Zero());
   reconstruction.Transform(tgt_from_src);
 
-  if (VLOG_IS_ON(2)) {
-    PrintBaselineAlignmentError(
-        baseline_dirs_in_world_, baseline_dirs_prior_, prior_from_src);
-  }
   return true;
 }
 
