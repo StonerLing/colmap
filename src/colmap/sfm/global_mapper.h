@@ -1,5 +1,6 @@
 #pragma once
 
+#include "colmap/estimators/bundle_adjustment.h"
 #include "colmap/estimators/bundle_adjustment_ceres.h"
 #include "colmap/estimators/global_positioning.h"
 #include "colmap/estimators/rotation_averaging.h"
@@ -11,6 +12,8 @@
 #include <filesystem>
 #include <functional>
 #include <limits>
+#include <memory>
+#include <optional>
 
 namespace colmap {
 
@@ -60,10 +63,15 @@ struct GlobalMapperOptions {
     return opts;
   }();
 
-  // Whether to resolve the rotation gauge ambiguity and refine absolute
-  // rotations using prior baselines.
-  bool refine_rotations_with_prior_baselines = false;
+  // Whether to use prior position for rotation refinement and bundle
+  // adjustment.
+  bool use_prior_position = false;
+
+  // Options for prior baseline based rotation refinement.
   PriorBaselineRotationRefinementOptions prior_baseline_rotation_refinement;
+
+  // Options for pose prior bundle adjustment.
+  PosePriorBundleAdjustmentOptions pose_prior_bundle_adjustment;
 
   // Track establishment options.
   // Max pixel distance between observations of the same track within one image.
@@ -111,6 +119,8 @@ struct GlobalMapperOptions {
   RotationEstimatorOptions RotationAveraging() const;
   GlobalPositionerOptions GlobalPositioning() const;
   BundleAdjustmentOptions BundleAdjustment() const;
+  std::optional<PosePriorBundleAdjustmentOptions> PosePriorBundleAdjustment()
+      const;
   IncrementalTriangulator::Options Retriangulation() const;
 };
 
@@ -151,18 +161,21 @@ class GlobalMapper {
   // Run iterative bundle adjustment to refine poses and structure. The optional
   // `on_progress` callback is invoked after each iteration and returns true if
   // a stop has been requested, in which case the iteration terminates early.
-  bool IterativeBundleAdjustment(const BundleAdjustmentOptions& options,
-                                 double max_normalized_reproj_error,
-                                 double min_tri_angle_deg,
-                                 int num_iterations,
-                                 bool skip_fixed_rotation_stage = false,
-                                 bool skip_joint_optimization_stage = false,
-                                 const std::function<bool()>& on_progress = {});
+  bool IterativeBundleAdjustment(
+      const BundleAdjustmentOptions& options,
+      const std::optional<PosePriorBundleAdjustmentOptions>& prior_options,
+      double max_normalized_reproj_error,
+      double min_tri_angle_deg,
+      int num_iterations,
+      bool skip_fixed_rotation_stage = false,
+      bool skip_joint_optimization_stage = false,
+      const std::function<bool()>& on_progress = {});
 
   // Iteratively retriangulate tracks and refine to improve structure.
   bool IterativeRetriangulateAndRefine(
       const IncrementalTriangulator::Options& options,
       const BundleAdjustmentOptions& ba_options,
+      const std::optional<PosePriorBundleAdjustmentOptions>& prior_options,
       double max_normalized_reproj_error,
       double min_tri_angle_deg);
 
@@ -170,6 +183,10 @@ class GlobalMapper {
   std::shared_ptr<class Reconstruction> Reconstruction() const;
 
  private:
+  bool RunBundleAdjustment(
+      const BundleAdjustmentOptions& options,
+      const std::optional<PosePriorBundleAdjustmentOptions>& prior_options);
+
   std::shared_ptr<const DatabaseCache> database_cache_;
   std::shared_ptr<class PoseGraph> pose_graph_;
   std::shared_ptr<class Reconstruction> reconstruction_;

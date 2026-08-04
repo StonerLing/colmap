@@ -109,10 +109,7 @@ void GlobalPipeline::Run() {
   mapper_options.image_path = options_.image_path;
   mapper_options.num_threads = options_.num_threads;
   mapper_options.random_seed = options_.random_seed;
-  mapper_options.refine_rotations_with_prior_baselines =
-      options_.use_prior_position;
-  mapper_options.global_positioning.use_prior_position =
-      options_.use_prior_position;
+  mapper_options.use_prior_position = options_.use_prior_position;
 
   GlobalMapper global_mapper(database_cache_);
   global_mapper.BeginReconstruction(reconstruction);
