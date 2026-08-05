@@ -231,4 +231,42 @@ class PriorBaselineCoplanarityCostFunctor
   Eigen::Vector3d cam_ray2_;
 };
 
+// Ray-consistency residual between a 3D point and a prior camera position.
+// The residual is the cross product of the world-frame camera ray (obtained by
+// rotating the observed camera ray by the inverse of the cam_from_world
+// rotation) with the vector from the prior camera center to the 3D point, i.e.
+// r = (R^-1 * cam_ray) x (point3D - prior_position), which vanishes when the
+// 3D point lies on the line through the prior camera center along the
+// observed camera ray. This couples the global rotations with the prior
+// positions through the reconstructed 3D points.
+class PriorPositionRayConsistencyCostFunctor
+    : public AutoDiffCostFunctor<PriorPositionRayConsistencyCostFunctor, 3, 4, 3> {
+ public:
+  explicit PriorPositionRayConsistencyCostFunctor(
+      const Eigen::Vector3d& cam_ray, const Eigen::Vector3d& prior_position)
+      : cam_ray_(cam_ray), prior_position_(prior_position) {}
+
+  template <typename T>
+  bool operator()(const T* const rotation_cam_from_world_ptr,
+                  const T* const point3D_ptr,
+                  T* residuals_ptr) const {
+    const Eigen::Quaternion<T> rotation =
+        EigenQuaternionMap<T>(rotation_cam_from_world_ptr);
+    const Eigen::Matrix<T, 3, 1> ray_world =
+        rotation.inverse() * cam_ray_.cast<T>();
+    const Eigen::Matrix<T, 3, 1> point3D =
+        Eigen::Map<const Eigen::Matrix<T, 3, 1>>(point3D_ptr);
+    const Eigen::Matrix<T, 3, 1> residual =
+        (point3D - prior_position_.cast<T>()).cross(ray_world);
+    residuals_ptr[0] = residual(0);
+    residuals_ptr[1] = residual(1);
+    residuals_ptr[2] = residual(2);
+    return true;
+  }
+
+ private:
+  Eigen::Vector3d cam_ray_;
+  Eigen::Vector3d prior_position_;
+};
+
 }  // namespace colmap

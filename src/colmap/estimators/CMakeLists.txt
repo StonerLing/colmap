@@ -40,6 +40,7 @@ set(ESTIMATORS_SRCS
     covariance.h covariance.cc
     fundamental_matrix_degensac.h fundamental_matrix_degensac.cc
     generalized_pose.h generalized_pose.cc
+    global_orienting.h global_orienting.cc
     global_positioning.h global_positioning.cc
     gravity_refinement.h gravity_refinement.cc
     pose.h pose.cc

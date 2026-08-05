@@ -2,6 +2,7 @@
 
 #include "colmap/estimators/bundle_adjustment.h"
 #include "colmap/estimators/bundle_adjustment_caspar.h"
+#include "colmap/estimators/global_orienting.h"
 #include "colmap/estimators/rotation_averaging.h"
 #include "colmap/math/math.h"
 #include "colmap/math/union_find.h"
@@ -55,7 +56,7 @@ GlobalPositionerOptions GlobalMapperOptions::GlobalPositioning() const {
   GlobalPositionerOptions opts = global_positioning;
   opts.refine_sensor_from_rig = refine_sensor_from_rig;
   opts.solver_options.num_threads = num_threads;
-  opts.use_prior_position = use_prior_position;
+  opts.use_prior_position = false;
   if (random_seed >= 0) {
     opts.random_seed = random_seed;
     opts.use_parameter_block_ordering = false;
@@ -752,18 +753,6 @@ bool GlobalMapper::Solve(const GlobalMapperOptions& options,
               << " seconds";
   }
 
-  if (options.use_prior_position) {
-    LOG_HEADING2("Refining global rotations with prior positions");
-    Timer run_timer;
-    run_timer.Start();
-    if (!RefineGlobalRotationsWithPriorBaselines(
-            options.prior_baseline_rotation_refinement)) {
-      LOG(WARNING) << "Failed to refine global rotations with prior baselines";
-    }
-    LOG(INFO) << "Global rotations refinement done in "
-              << run_timer.ElapsedSeconds() << " seconds";
-  }
-
   // Track establishment and selection
   if (!options.skip_track_establishment) {
     LOG_HEADING1("Running track establishment");
@@ -772,6 +761,20 @@ bool GlobalMapper::Solve(const GlobalMapperOptions& options,
     EstablishTracks(options);
     LOG(INFO) << "Track establishment done in " << run_timer.ElapsedSeconds()
               << " seconds";
+  }
+
+  if (options.use_prior_position) {
+    LOG_HEADING2("Refining global rotations with prior positions");
+    Timer run_timer;
+    run_timer.Start();
+    if (!RunPosePriorGlobalOrienting(PosePriorGlobalOrienterOptions{},
+                                     *pose_graph_,
+                                     database_cache_->PosePriors(),
+                                     *reconstruction_)) {
+      LOG(WARNING) << "Failed to refine global rotations with prior baselines";
+    }
+    LOG(INFO) << "Global rotations refinement done in "
+              << run_timer.ElapsedSeconds() << " seconds";
   }
 
   // Global positioning
