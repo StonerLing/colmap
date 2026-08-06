@@ -68,29 +68,4 @@ struct Point3DAlignmentCostFunctor
   const Eigen::Vector3d point_in_b_prior_;
   const bool use_log_scale_;
 };
-
-// Cost function for aligning two unit vectors via quaternion rotation. The
-// residual is r = q * vector_a - vector_b, where q is the rotation from
-// frame_a to frame_b. Used for Wahba's problem (optimal attitude estimation).
-struct UnitVectorAlignmentCostFunctor
-    : public AutoDiffCostFunctor<UnitVectorAlignmentCostFunctor, 3, 4> {
-  UnitVectorAlignmentCostFunctor(const Eigen::Vector3d& vector_a,
-                                 const Eigen::Vector3d& vector_b)
-      : unit_vector_a_(vector_a.normalized()),
-        unit_vector_b_(vector_b.normalized()) {}
-
-  template <typename T>
-  bool operator()(const T* const rotation_b_from_a, T* residuals_ptr) const {
-    Eigen::Map<Eigen::Matrix<T, 3, 1>> residuals(residuals_ptr);
-    residuals =
-        EigenQuaternionMap<T>(rotation_b_from_a) * unit_vector_a_.cast<T>() -
-        unit_vector_b_.cast<T>();
-    return true;
-  }
-
- private:
-  Eigen::Vector3d unit_vector_a_;
-  Eigen::Vector3d unit_vector_b_;
-};
-
 }  // namespace colmap
