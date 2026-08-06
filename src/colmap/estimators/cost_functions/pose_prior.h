@@ -170,46 +170,6 @@ struct RelativePosePriorCostFunctor
   const Rigid3d j_from_i_prior_;
 };
 
-// Scalar coplanarity residual enforcing the epipolar constraint between the
-// cam rays of a correspondence and the prior baseline direction. The residual
-// is the dot product of the prior baseline with the cross product of the two
-// cam rays rotated into the world frame, i.e.
-// r = baseline * ((R1^-1 * cam_ray1) x (R2^-1 * cam_ray2)), which vanishes
-// when the two cam rays and the baseline are coplanar in the world frame.
-class PriorBaselineCoplanarityCostFunctor
-    : public AutoDiffCostFunctor<PriorBaselineCoplanarityCostFunctor, 1, 4, 4> {
- public:
-  explicit PriorBaselineCoplanarityCostFunctor(const Eigen::Vector3d& baseline,
-                                               const Eigen::Vector3d& cam_ray1,
-                                               const Eigen::Vector3d& cam_ray2)
-      : baseline_(baseline.normalized()),
-        cam_ray1_(cam_ray1),
-        cam_ray2_(cam_ray2) {}
-
-  template <typename T>
-  bool operator()(const T* const rotation1_cam_from_world_ptr,
-                  const T* const rotation2_cam_from_world_ptr,
-                  T* residuals_ptr) const {
-    const Eigen::Quaternion<T> rotation1 =
-        EigenQuaternionMap<T>(rotation1_cam_from_world_ptr);
-    const Eigen::Quaternion<T> rotation2 =
-        EigenQuaternionMap<T>(rotation2_cam_from_world_ptr);
-
-    const Eigen::Matrix<T, 3, 1> ray1_world =
-        rotation1.inverse() * cam_ray1_.cast<T>();
-    const Eigen::Matrix<T, 3, 1> ray2_world =
-        rotation2.inverse() * cam_ray2_.cast<T>();
-
-    residuals_ptr[0] = baseline_.cast<T>().dot(ray1_world.cross(ray2_world));
-    return true;
-  }
-
- private:
-  Eigen::Vector3d baseline_;
-  Eigen::Vector3d cam_ray1_;
-  Eigen::Vector3d cam_ray2_;
-};
-
 // Ray-consistency residual between a 3D point and a prior camera position.
 // The residual is the cross product of the world-frame camera ray (obtained by
 // rotating the observed camera ray by the inverse of the cam_from_world
