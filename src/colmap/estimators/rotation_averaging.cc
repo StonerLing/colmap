@@ -1,8 +1,5 @@
 #include "colmap/estimators/rotation_averaging.h"
 
-#include "colmap/estimators/cost_functions/alignment.h"
-#include "colmap/estimators/cost_functions/manifold.h"
-#include "colmap/estimators/cost_functions/pose_prior.h"
 #include "colmap/estimators/rotation_averaging_impl.h"
 #include "colmap/geometry/pose.h"
 #include "colmap/math/math.h"
@@ -10,10 +7,7 @@
 #include "colmap/util/hash_containers.h"
 
 #include <algorithm>
-#include <limits>
 #include <queue>
-
-#include <ceres/ceres.h>
 
 namespace colmap {
 namespace {
@@ -726,4 +720,5 @@ bool RunRotationAveraging(const RotationEstimatorOptions& options,
 
   return true;
 }
+
 }  // namespace colmap

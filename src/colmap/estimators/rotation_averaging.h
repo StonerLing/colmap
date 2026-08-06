@@ -9,7 +9,6 @@
 #include <vector>
 
 #include <Eigen/Core>
-#include <ceres/ceres.h>
 
 // Code is adapted from Theia's RobustRotationEstimator
 // (http://www.theia-sfm.org/). For gravity aligned rotation averaging, refer
@@ -157,32 +156,4 @@ bool RunRotationAveraging(const RotationEstimatorOptions& options,
                           Reconstruction& reconstruction,
                           const std::vector<PosePrior>& pose_priors);
 
-// Options for prior-baseline-based rotation alignment and refinement.
-struct PriorBaselineRotationRefinementOptions {
-  // Minimum prior baseline length to define a well-posed epipolar constraint.
-  double min_baseline_length = 1e-8;
-
-  // Maximum number of inlier matches per image pair used to build epipolar
-  // constraints.
-  size_t max_num_matches_per_pair = 50;
-
-  // Maximum stddev of prior baseline direction.
-  double max_prior_baseline_dir_stddev_deg = 5.0;
-
-  // Huber loss threshold for the baseline-direction alignment residuals.
-  double align_loss_threshold_deg = 2.0;
-
-  // The options for the alignment solver.
-  ceres::Solver::Options align_solver_options;
-
-  // The options for the refinement solver.
-  ceres::Solver::Options refine_solver_options;
-
-  PriorBaselineRotationRefinementOptions() {
-    align_solver_options.linear_solver_type = ceres::DENSE_QR;
-    align_solver_options.max_num_iterations = 50;
-    refine_solver_options.linear_solver_type = ceres::DENSE_QR;
-    refine_solver_options.max_num_iterations = 50;
-  }
-};
 }  // namespace colmap

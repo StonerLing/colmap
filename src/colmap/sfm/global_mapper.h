@@ -147,7 +147,8 @@ class GlobalMapper {
   bool GlobalPositioning(const GlobalPositionerOptions& options,
                          double max_angular_reproj_error_deg,
                          double max_normalized_reproj_error,
-                         double min_tri_angle_deg);
+                         double min_tri_angle_deg,
+                         bool normalize_reconstruction);
 
   // Run iterative bundle adjustment to refine poses and structure. The optional
   // `on_progress` callback is invoked after each iteration and returns true if

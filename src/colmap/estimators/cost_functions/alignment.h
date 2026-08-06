@@ -68,4 +68,5 @@ struct Point3DAlignmentCostFunctor
   const Eigen::Vector3d point_in_b_prior_;
   const bool use_log_scale_;
 };
+
 }  // namespace colmap

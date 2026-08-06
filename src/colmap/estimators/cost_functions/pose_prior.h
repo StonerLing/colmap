@@ -92,27 +92,6 @@ struct AbsolutePosePositionPriorCostFunctor
   const Eigen::Vector3d position_in_world_prior_;
 };
 
-// 3-DoF error on a position in the world coordinate frame, given as a plain
-// 3-vector (e.g., a camera frame center in global positioning).
-struct AbsolutePositionPriorCostFunctor
-    : public AutoDiffCostFunctor<AbsolutePositionPriorCostFunctor, 3, 3> {
- public:
-  explicit AbsolutePositionPriorCostFunctor(
-      const Eigen::Vector3d& position_in_world_prior)
-      : position_in_world_prior_(position_in_world_prior) {}
-
-  template <typename T>
-  bool operator()(const T* const position_in_world, T* residuals_ptr) const {
-    Eigen::Map<Eigen::Matrix<T, 3, 1>> residuals(residuals_ptr);
-    residuals = Eigen::Map<const Eigen::Matrix<T, 3, 1>>(position_in_world) -
-                position_in_world_prior_.template cast<T>();
-    return true;
-  }
-
- private:
-  const Eigen::Vector3d position_in_world_prior_;
-};
-
 // 3-DoF error on the rig sensor position in the world coordinate frame.
 struct AbsoluteRigPosePositionPriorCostFunctor
     : public AutoDiffCostFunctor<AbsoluteRigPosePositionPriorCostFunctor,

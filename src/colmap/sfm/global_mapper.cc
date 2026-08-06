@@ -18,30 +18,6 @@
 #include <memory>
 
 namespace colmap {
-namespace {
-
-// Returns true if all cameras that have pose priors also have a prior focal
-// length, which is required to use prior position constraints.
-bool HasPriorFocalLengthsForPosePriors(
-    const Reconstruction& reconstruction,
-    const std::vector<PosePrior>& pose_priors) {
-  for (const auto& pose_prior : pose_priors) {
-    if (!pose_prior.HasPosition() ||
-        pose_prior.corr_data_id.sensor_id.type != SensorType::CAMERA) {
-      continue;
-    }
-    const image_t image_id = pose_prior.corr_data_id.id;
-    if (!reconstruction.ExistsImage(image_id)) {
-      continue;
-    }
-    if (!reconstruction.Image(image_id).CameraPtr()->has_prior_focal_length) {
-      return false;
-    }
-  }
-  return true;
-}
-
-}  // namespace
 
 RotationEstimatorOptions GlobalMapperOptions::RotationAveraging() const {
   RotationEstimatorOptions opts = rotation_averaging;
@@ -56,7 +32,6 @@ GlobalPositionerOptions GlobalMapperOptions::GlobalPositioning() const {
   GlobalPositionerOptions opts = global_positioning;
   opts.refine_sensor_from_rig = refine_sensor_from_rig;
   opts.solver_options.num_threads = num_threads;
-  opts.use_prior_position = false;
   if (random_seed >= 0) {
     opts.random_seed = random_seed;
     opts.use_parameter_block_ordering = false;
@@ -295,19 +270,9 @@ void GlobalMapper::EstablishTracks(const GlobalMapperOptions& options) {
 bool GlobalMapper::GlobalPositioning(const GlobalPositionerOptions& options,
                                      double max_angular_reproj_error_deg,
                                      double max_normalized_reproj_error,
-                                     double min_tri_angle_deg) {
-  GlobalPositionerOptions custom_options = options;
-  const std::vector<PosePrior>& pose_priors = database_cache_->PosePriors();
-  if (custom_options.use_prior_position &&
-      !HasPriorFocalLengthsForPosePriors(*reconstruction_, pose_priors)) {
-    LOG(WARNING)
-        << "Cannot use prior positions: some cameras with pose priors have "
-           "no prior focal length. Canceling prior position constraints.";
-    custom_options.use_prior_position = false;
-  }
-
-  if (!RunGlobalPositioning(
-          custom_options, *pose_graph_, *reconstruction_, pose_priors)) {
+                                     double min_tri_angle_deg,
+                                     bool normalize_reconstruction) {
+  if (!RunGlobalPositioning(options, *pose_graph_, *reconstruction_)) {
     return false;
   }
 
@@ -360,7 +325,7 @@ bool GlobalMapper::GlobalPositioning(const GlobalPositionerOptions& options,
   // Normalize the structure for numerical stability.
   // Position priors provide an absolute gauge, so normalization is skipped
   // when they are used.
-  if (!custom_options.use_prior_position) {
+  if (normalize_reconstruction) {
     reconstruction_->Normalize();
   }
 
@@ -643,7 +608,8 @@ bool GlobalMapper::Solve(const GlobalMapperOptions& options,
     if (!GlobalPositioning(options.GlobalPositioning(),
                            options.max_angular_reproj_error_deg,
                            options.max_normalized_reproj_error,
-                           options.min_tri_angle_deg)) {
+                           options.min_tri_angle_deg,
+                           !options.use_prior_position)) {
       return false;
     }
     LOG(INFO) << "Global positioning done in " << run_timer.ElapsedSeconds()
