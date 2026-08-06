@@ -567,7 +567,7 @@ bool GlobalMapper::IterativeBundleAdjustment(
       if (opts_position_only.backend == BundleAdjustmentBackend::CASPAR) {
         opts_position_only.backend = BundleAdjustmentBackend::CERES;
       }
-      if (!RunBundleAdjustment(opts_position_only, *reconstruction_)) {
+      if (!RunBundleAdjustment(opts_position_only, prior_options)) {
         return false;
       }
       LOG(INFO) << "Global bundle adjustment iteration " << ite + 1 << " / "
